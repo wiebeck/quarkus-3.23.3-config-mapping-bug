@@ -1,62 +1,67 @@
-# code-with-quarkus
+# Quarkus 3.23.3 Config Issue Reproducer
 
-This project uses Quarkus, the Supersonic Subatomic Java Framework.
+This reproducer demonstrates an issue with Quarkus 3.23.3 configuration.
+The app defines a `@ConfigMapping` annotated class `DemoConfig` that is being configured via environment variables in the Gradle build script:
 
-If you want to learn more about Quarkus, please visit its website: <https://quarkus.io/>.
+```kotlin
+tasks.withType<QuarkusDev> {
+    environmentVariables.put("DEMO_INNER_FOO_ID", "123")
+    environmentVariables.put("DEMO_INNER_FOO_DATA", "Some data")
 
-## Running the application in dev mode
-
-You can run your application in dev mode that enables live coding using:
-
-```shell script
-./gradlew quarkusDev
+    environmentVariables.put("DEMO_INNER_BAR_ID", "456")
+    environmentVariables.put("DEMO_INNER_BAR_DATA", "Some other data")
+}
 ```
 
-> **_NOTE:_**  Quarkus now ships with a Dev UI, which is available in dev mode only at <http://localhost:8080/q/dev/>.
+By calling the `/cfg` endpoint that simply returns the configured values we **expect** an output like this (keys are may be out of order):
 
-## Packaging and running the application
-
-The application can be packaged using:
-
-```shell script
-./gradlew build
+```
+Key: foo
+  ID: 123
+  Data: Some data
+Key: bar
+  ID: 456
+  Data: Some other data
 ```
 
-It produces the `quarkus-run.jar` file in the `build/quarkus-app/` directory.
-Be aware that it’s not an _über-jar_ as the dependencies are copied into the `build/quarkus-app/lib/` directory.
+But instead **the output is empty**.
 
-The application is now runnable using `java -jar build/quarkus-app/quarkus-run.jar`.
+## Observation 1 - Vault Dependency
 
-If you want to build an _über-jar_, execute the following command:
+By commenting out the `quarkus-vault` dependency in the `build.gradle.kts` file, the **expected output is produced**. So somehow the Vault dependency is interfering with the configuration.
 
-```shell script
-./gradlew build -Dquarkus.package.jar.type=uber-jar
+## Observation 2 - Downgrade `smallrye-config`
+
+By adding the following code to the `build.gradle.kts` file, we force the `smallrye-config` version to be 3.13.0, the version being used in Quarkus 3.23.2:
+
+```kotlin
+configurations.all {
+    resolutionStrategy {
+        force(
+            "io.smallrye.config:smallrye-config-common:3.13.0",
+            "io.smallrye.config:smallrye-config-core:3.13.0",
+            "io.smallrye.config:smallrye-config:3.13.0",
+        )
+    }
+}
 ```
 
-The application, packaged as an _über-jar_, is now runnable using `java -jar build/*-runner.jar`.
+This also produces the **expected output**.
 
-## Creating a native executable
+## Observation 3 - application.properties
 
-You can create a native executable using:
+**Revert** this repository to the original state (empty output instead of expected output) and add the following property to the `application.properties` file:
 
-```shell script
-./gradlew build -Dquarkus.native.enabled=true
+```properties
+demo.inner.bar.data=This text won't show!
 ```
 
-Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
+This produces the following output:
 
-```shell script
-./gradlew build -Dquarkus.native.enabled=true -Dquarkus.native.container-build=true
+```
+Key: bar
+  ID: 456
+  Data: Some other data
 ```
 
-You can then execute your native executable with: `./build/code-with-quarkus-1.0.0-SNAPSHOT-runner`
-
-If you want to learn more about building native executables, please consult <https://quarkus.io/guides/gradle-tooling>.
-
-## Provided Code
-
-### REST
-
-Easily start your REST Web Services
-
-[Related guide section...](https://quarkus.io/guides/getting-started-reactive#reactive-jax-rs-resources)
+It is clear that environment variables supersede the properties file which explains the `Data: Some other data` line, but it is not clear why this triggers the correct parsing of the `DEMO_INNER_BAR_*` environment variables but still ignore the `DEMO_INNER_FOO_*` environment variables.
